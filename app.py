@@ -1406,9 +1406,9 @@ elif menu_seleccion == "📑 Fundamentación Académica & Equipo":
         """)
 
         autores = [
-            "YUSTRA, Abril", "GONZALES, Malena", "LANERI, Guadalupe", "SOBRERO, Francisco",
+            "YUSTRA, Abril", "González Torrella Malena", "LANERI, Guadalupe", "SOBRERO, Francisco",
             "ROLDAN, Mateo", "RABEY, Pedro", "CORIA, Valentín Pedro", "IURATO, Mateo",
-            "HUCK, Kelien", "OBREGON, Javier", "Poro", "Samun", "Simon", "Tiziano",
+            "HUCK, Kelien", "OBREGON, Javier", "Cersofios, Andrés", "González, Samuel", "De los Santos, Simón", "Meschini, Tiziano",
             "GONZÁLEZ, Tomás", "AUDICIO GASTALDI, Marcelo Gastón"
         ]
 
