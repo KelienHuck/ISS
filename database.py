@@ -146,6 +146,67 @@ def inicializar_base_datos() -> None:
             CREATE INDEX IF NOT EXISTS idx_informes_prioridad 
             ON Informes_Sanitarios(prioridad);
         """)
+
+        # Tabla RELEVAR: Planilla de Relevamiento de Agentes Sanitarios (Factores Ponderados)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Relevamiento_Relevar (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha_hora DATETIME DEFAULT CURRENT_TIMESTAMP,
+                tipo_poblacion TEXT NOT NULL,
+                rango_etario TEXT NULL,
+                genero TEXT NULL,
+                barrio_o_residencia TEXT NULL,
+                carrera TEXT NULL,
+                ano_cursado TEXT NULL,
+                situacion_habitacional TEXT NULL,
+                factores_vulnerabilidad TEXT NOT NULL,
+                factores_protectores TEXT NOT NULL,
+                puntaje_vulnerabilidad REAL NOT NULL,
+                puntaje_proteccion REAL NOT NULL,
+                indice_riesgo_ponderado REAL NOT NULL,
+                nivel_prioridad TEXT NOT NULL,
+                observaciones_libres TEXT NULL,
+                canal TEXT DEFAULT 'Formulario RELEVAR Web'
+            );
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_relevar_fecha 
+            ON Relevamiento_Relevar(fecha_hora);
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_relevar_poblacion 
+            ON Relevamiento_Relevar(tipo_poblacion);
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_relevar_prioridad 
+            ON Relevamiento_Relevar(nivel_prioridad);
+        """)
+
+        # Tabla de Talleres Comunitarios del Sistema
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Talleres_Sistema (
+                id TEXT PRIMARY KEY,
+                titulo TEXT NOT NULL,
+                categoria TEXT NOT NULL,
+                icono TEXT NOT NULL,
+                descripcion TEXT NOT NULL,
+                detalle_ampliado TEXT NOT NULL,
+                responde_a TEXT NOT NULL,
+                publico_objetivo TEXT DEFAULT 'Todos',
+                lugar TEXT NOT NULL,
+                horario TEXT NOT NULL,
+                frecuencia TEXT NOT NULL,
+                coordinacion TEXT NOT NULL,
+                requisitos TEXT NOT NULL,
+                estado TEXT DEFAULT 'Activo',
+                es_ficticio INTEGER DEFAULT 0,
+                destacado_carrusel INTEGER DEFAULT 0,
+                imagen_url TEXT NULL,
+                interesados_contador INTEGER DEFAULT 0,
+                fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
         
         conexion.commit()
 
@@ -513,4 +574,700 @@ def poblar_informes_ejemplo():
     ]
     for inf in informes_demo:
         registrar_informe_sanitario(**inf)
+
+
+# =====================================================================
+# PLATAFORMA RELEVAR: GESTIÓN DE RELEVAMIENTOS PONDERADOS Y TALLERES
+# Conforme a: "Plataforma de trazabilidad de indicadores de la salud y
+# gestión de talleres comunitarios mediante el relevamiento de datos ponderados"
+# FIUNER - CiC Luis Gianotti - Oro Verde
+# =====================================================================
+
+def registrar_relevamiento_relevar(
+    tipo_poblacion: str,
+    rango_etario: Optional[str],
+    genero: Optional[str],
+    barrio_o_residencia: Optional[str],
+    carrera: Optional[str],
+    ano_cursado: Optional[str],
+    situacion_habitacional: Optional[str],
+    factores_vulnerabilidad: List[str],
+    factores_protectores: List[str],
+    puntaje_vulnerabilidad: float,
+    puntaje_proteccion: float,
+    indice_riesgo_ponderado: float,
+    nivel_prioridad: str,
+    observaciones_libres: Optional[str] = None,
+    canal: str = "Formulario RELEVAR Web"
+) -> int:
+    """
+    Registra un formulario anónimo de la Planilla de Agentes Sanitarios (RELEVAR)
+    con sus cálculos ponderados de vulnerabilidad, protección y riesgo.
+    """
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("""
+            INSERT INTO Relevamiento_Relevar (
+                fecha_hora, tipo_poblacion, rango_etario, genero, barrio_o_residencia,
+                carrera, ano_cursado, situacion_habitacional, factores_vulnerabilidad,
+                factores_protectores, puntaje_vulnerabilidad, puntaje_proteccion,
+                indice_riesgo_ponderado, nivel_prioridad, observaciones_libres, canal
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            );
+        """, (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            tipo_poblacion,
+            rango_etario,
+            genero,
+            barrio_o_residencia,
+            carrera,
+            ano_cursado,
+            situacion_habitacional,
+            json.dumps(factores_vulnerabilidad, ensure_ascii=False),
+            json.dumps(factores_protectores, ensure_ascii=False),
+            round(puntaje_vulnerabilidad, 2),
+            round(puntaje_proteccion, 2),
+            round(indice_riesgo_ponderado, 2),
+            nivel_prioridad,
+            observaciones_libres.strip() if observaciones_libres else None,
+            canal
+        ))
+        conexion.commit()
+        return cursor.lastrowid
+
+
+def obtener_relevamientos_relevar(
+    filtro_poblacion: Optional[str] = None,
+    filtro_prioridad: Optional[str] = None,
+    filtro_carrera: Optional[str] = None,
+    filtro_barrio: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Recupera los relevamientos sanitarios con filtros para el tablero de trazabilidad.
+    """
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        query = "SELECT * FROM Relevamiento_Relevar WHERE 1=1"
+        params = []
+
+        if filtro_poblacion and filtro_poblacion != "Todas":
+            query += " AND tipo_poblacion = ?"
+            params.append(filtro_poblacion)
+
+        if filtro_prioridad and filtro_prioridad != "Todas":
+            query += " AND nivel_prioridad = ?"
+            params.append(filtro_prioridad)
+
+        if filtro_carrera and filtro_carrera != "Todas":
+            query += " AND carrera = ?"
+            params.append(filtro_carrera)
+
+        if filtro_barrio and filtro_barrio != "Todos":
+            query += " AND barrio_o_residencia = ?"
+            params.append(filtro_barrio)
+
+        query += " ORDER BY fecha_hora DESC, id DESC;"
+        cursor.execute(query, params)
+        filas = cursor.fetchall()
+        
+        resultados = []
+        for f in filas:
+            item = dict(f)
+            try:
+                item["factores_vulnerabilidad"] = json.loads(item["factores_vulnerabilidad"])
+            except Exception:
+                item["factores_vulnerabilidad"] = []
+            try:
+                item["factores_protectores"] = json.loads(item["factores_protectores"])
+            except Exception:
+                item["factores_protectores"] = []
+            resultados.append(item)
+        return resultados
+
+
+def obtener_metricas_relevar() -> Dict[str, Any]:
+    """
+    Calcula agregaciones epidemiológicas de los relevamientos RELEVAR:
+    Índices promedio de vulnerabilidad, protección, balance de salud mental y distribución poblacional.
+    """
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        
+        cursor.execute("SELECT COUNT(*) AS total FROM Relevamiento_Relevar;")
+        total = cursor.fetchone()["total"]
+
+        if total == 0:
+            return {
+                "total": 0,
+                "fiuner_total": 0,
+                "comunidad_total": 0,
+                "ivp_promedio": 0.0,
+                "ifp_promedio": 0.0,
+                "riesgo_promedio": 0.0,
+                "prioridades": {},
+                "factores_vuln_conteo": {},
+                "factores_prot_conteo": {},
+                "salud_mental_prevalencia": 0.0
+            }
+
+        cursor.execute("SELECT COUNT(*) AS total FROM Relevamiento_Relevar WHERE tipo_poblacion LIKE '%FIUNER%' OR tipo_poblacion LIKE '%Estudiante%';")
+        fiuner_total = cursor.fetchone()["total"]
+
+        comunidad_total = total - fiuner_total
+
+        cursor.execute("SELECT AVG(puntaje_vulnerabilidad) AS ivp, AVG(puntaje_proteccion) AS ifp, AVG(indice_riesgo_ponderado) AS riesgo FROM Relevamiento_Relevar;")
+        row_avg = cursor.fetchone()
+        ivp_promedio = round(row_avg["ivp"] or 0.0, 1)
+        ifp_promedio = round(row_avg["ifp"] or 0.0, 1)
+        riesgo_promedio = round(row_avg["riesgo"] or 0.0, 1)
+
+        cursor.execute("SELECT nivel_prioridad, COUNT(*) as cantidad FROM Relevamiento_Relevar GROUP BY nivel_prioridad;")
+        prioridades = {r["nivel_prioridad"]: r["cantidad"] for r in cursor.fetchall()}
+
+        # Frecuencia de factores
+        cursor.execute("SELECT factores_vulnerabilidad, factores_protectores FROM Relevamiento_Relevar;")
+        all_filas = cursor.fetchall()
+        
+        vuln_conteo: Dict[str, int] = {}
+        prot_conteo: Dict[str, int] = {}
+        salud_mental_count = 0
+
+        claves_salud_mental = [
+            "Estrés académico o laboral severo / agotamiento cognitivo",
+            "Episodios frecuentes de ansiedad o angustia",
+            "Trastornos del sueño o insomnio crónico",
+            "Aislamiento social / desarraigo familiar",
+            "Problema de salud mental diagnosticado sin apoyo"
+        ]
+
+        for fila in all_filas:
+            try:
+                v_list = json.loads(fila["factores_vulnerabilidad"])
+            except Exception:
+                v_list = []
+            try:
+                p_list = json.loads(fila["factores_protectores"])
+            except Exception:
+                p_list = []
+
+            tiene_sm = False
+            for v in v_list:
+                vuln_conteo[v] = vuln_conteo.get(v, 0) + 1
+                if any(sm in v for sm in ["Estrés", "ansiedad", "sueño", "Aislamiento", "salud mental"]):
+                    tiene_sm = True
+
+            if tiene_sm:
+                salud_mental_count += 1
+
+            for p in p_list:
+                prot_conteo[p] = prot_conteo.get(p, 0) + 1
+
+        sm_prevalencia = round((salud_mental_count / total * 100), 1) if total > 0 else 0.0
+
+        return {
+            "total": total,
+            "fiuner_total": fiuner_total,
+            "comunidad_total": comunidad_total,
+            "ivp_promedio": ivp_promedio,
+            "ifp_promedio": ifp_promedio,
+            "riesgo_promedio": riesgo_promedio,
+            "prioridades": prioridades,
+            "factores_vuln_conteo": vuln_conteo,
+            "factores_prot_conteo": prot_conteo,
+            "salud_mental_prevalencia": sm_prevalencia
+        }
+
+
+def obtener_todos_los_talleres(
+    estado_filtro: Optional[str] = "Activo",
+    categoria_filtro: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Recupera los talleres comunitarios de la base de datos persistente.
+    """
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        query = "SELECT * FROM Talleres_Sistema WHERE 1=1"
+        params = []
+
+        if estado_filtro and estado_filtro != "Todos":
+            query += " AND estado = ?"
+            params.append(estado_filtro)
+
+        if categoria_filtro and categoria_filtro != "Todas":
+            query += " AND categoria = ?"
+            params.append(categoria_filtro)
+
+        query += " ORDER BY destacado_carrusel DESC, titulo ASC;"
+        cursor.execute(query, params)
+        filas = cursor.fetchall()
+        
+        talleres = []
+        for f in filas:
+            item = dict(f)
+            try:
+                item["responde_a"] = json.loads(item["responde_a"])
+            except Exception:
+                item["responde_a"] = []
+            talleres.append(item)
+        return talleres
+
+
+def registrar_nuevo_taller(
+    id_taller: str,
+    titulo: str,
+    categoria: str,
+    icono: str,
+    descripcion: str,
+    detalle_ampliado: str,
+    responde_a: List[str],
+    publico_objetivo: str,
+    lugar: str,
+    horario: str,
+    frecuencia: str,
+    coordinacion: str,
+    requisitos: str,
+    estado: str = "Activo",
+    es_ficticio: int = 0,
+    destacado_carrusel: int = 0,
+    imagen_url: Optional[str] = None
+) -> bool:
+    """
+    Inserta un nuevo taller o propuesta de abordaje en la base de datos.
+    """
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO Talleres_Sistema (
+                id, titulo, categoria, icono, descripcion, detalle_ampliado,
+                responde_a, publico_objetivo, lugar, horario, frecuencia,
+                coordinacion, requisitos, estado, es_ficticio, destacado_carrusel,
+                imagen_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            id_taller,
+            titulo.strip(),
+            categoria.strip(),
+            icono.strip(),
+            descripcion.strip(),
+            detalle_ampliado.strip(),
+            json.dumps(responde_a, ensure_ascii=False),
+            publico_objetivo,
+            lugar.strip(),
+            horario.strip(),
+            frecuencia.strip(),
+            coordinacion.strip(),
+            requisitos.strip(),
+            estado,
+            es_ficticio,
+            destacado_carrusel,
+            imagen_url
+        ))
+        conexion.commit()
+        return True
+
+
+def cambiar_estado_taller(id_taller: str, nuevo_estado: str) -> bool:
+    """Cambia el estado de un taller (ej. de 'Sugerido' a 'Activo' o 'En Pausa')."""
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("UPDATE Talleres_Sistema SET estado = ? WHERE id = ?;", (nuevo_estado, id_taller))
+        conexion.commit()
+        return cursor.rowcount > 0
+
+
+def incrementar_interes_taller(id_taller: str) -> int:
+    """Incrementa el contador de interesados/inscritos comunitarios en un taller."""
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("UPDATE Talleres_Sistema SET interesados_contador = interesados_contador + 1 WHERE id = ?;", (id_taller,))
+        cursor.execute("SELECT interesados_contador FROM Talleres_Sistema WHERE id = ?;", (id_taller,))
+        row = cursor.fetchone()
+        conexion.commit()
+        return row["interesados_contador"] if row else 1
+
+
+def inicializar_talleres_predeterminados():
+    """Puebla los talleres iniciales oficiales y de la prueba piloto FIUNER en la tabla."""
+    with obtener_conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT COUNT(*) AS total FROM Talleres_Sistema;")
+        if cursor.fetchone()["total"] > 0:
+            return
+
+    talleres_base = [
+        # TALLERES ORIENTADOS A ESTUDIANTES Y SALUD MENTAL UNIVERSITARIA (FIUNER)
+        {
+            "id_taller": "taller-fiuner-01",
+            "titulo": "Manejo del Estrés Académico, Ansiedad y Concentración",
+            "categoria": "Salud mental y bienestar",
+            "icono": "🧠",
+            "descripcion": "Estrategias de regulación emocional, técnicas de respiración y planificación cognitiva para afrontar parciales y entregas.",
+            "detalle_ampliado": (
+                "Dispositivo grupal coordinado por profesionales de la salud mental del CIC Gianotti y el equipo pedagógico de FIUNER. "
+                "Se abordan técnicas de desactivación fisiológica (respiración diafragmática, relajación muscular progresiva de Jacobson), "
+                "reestructuración de pensamientos catastrofistas ante exámenes, herramientas para superar la procrastinación por sobrecarga, "
+                "y fortalecimiento de redes de apoyo entre compañeros para evitar la soledad en la vida universitaria."
+            ),
+            "responde_a": [
+                "Estrés académico o laboral severo / agotamiento cognitivo",
+                "Episodios frecuentes de ansiedad o angustia",
+                "Aislamiento social / desarraigo familiar"
+            ],
+            "publico_objetivo": "Estudiantes Universitarios (FIUNER)",
+            "lugar": "FIUNER (Aula Magna / Espacio de Salud)",
+            "horario": "Jueves · 17:30 h",
+            "frecuencia": "Semanal (Duración: 1h 30m)",
+            "coordinacion": "Lic. en Psicología (CIC Gianotti) y Tutoría Estudiantil FIUNER",
+            "requisitos": "Abierto y gratuito para estudiantes de Bioingeniería, Bioinformática y Tecnicaturas. No se requiere inscripción previa.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 1,
+            "imagen_url": "https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=800&q=80"
+        },
+        {
+            "id_taller": "taller-fiuner-02",
+            "titulo": "Higiene del Sueño y Ritmos Circadianos en Universitarios",
+            "categoria": "Salud mental y bienestar",
+            "icono": "💤",
+            "descripcion": "Cómo reparar el descanso nocturno, evitar la sobreexposición a pantallas y mejorar el rendimiento cognitivo sin automedicación.",
+            "detalle_ampliado": (
+                "Taller interdisciplinario entre medicina del sueño y bioingeniería para abordar el insomnio habitual en los períodos de exámenes. "
+                "Se explican los ciclos de sueño REM y no-REM, el impacto de la luz azul en la melatonina, cómo programar siestas estratégicas ("
+                "power naps) y alternativas saludables para evitar el abuso de cafeína, bebidas energizantes o psicofármacos sin receta."
+            ),
+            "responde_a": [
+                "Trastornos del sueño o insomnio crónico",
+                "Estrés académico o laboral severo / agotamiento cognitivo"
+            ],
+            "publico_objetivo": "Estudiantes Universitarios (FIUNER)",
+            "lugar": "CiC 'Gianotti' / FIUNER Auditorio",
+            "horario": "Martes · 18:00 h",
+            "frecuencia": "Quincenal",
+            "coordinacion": "Médico Clínico (CIC) y Docentes de Neurofisiología (FIUNER)",
+            "requisitos": "Gratuito. Podés llevar cuaderno de notas.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 1,
+            "imagen_url": "https://images.unsplash.com/photo-1541781774459-bb2af2f05b55?auto=format&fit=crop&w=800&q=80"
+        },
+        {
+            "id_taller": "taller-fiuner-03",
+            "titulo": "Pausas Activas, Ergonomía y Prevención del Dolor Postural",
+            "categoria": "Prevención y cuidados",
+            "icono": "🧘",
+            "descripcion": "Ejercicios para cuello, columna y muñecas tras largas horas frente a la computadora o apuntes.",
+            "detalle_ampliado": (
+                "Práctica orientada por el servicio de Kinesiología del CIC Gianotti y especialistas en ergonomía biomédica de la facultad. "
+                "Enseña cómo regular la altura de pantallas y sillas de estudio caseras, posturas correctas, estiramientos de cadenas musculares "
+                "acortadas (isquiotibiales, trapecios, flexores de muñeca para prevenir túnel carpiano) y ejercicios de respiración activa."
+            ),
+            "responde_a": [
+                "Dolores osteomusculares o cefaleas frecuentes",
+                "Sedentarismo o inactividad física severa"
+            ],
+            "publico_objetivo": "Comunidad Universitaria y Residentes",
+            "lugar": "Playón Deportivo FIUNER / CiC Gianotti",
+            "horario": "Miércoles · 12:30 h (Mediodía)",
+            "frecuencia": "Semanal",
+            "coordinacion": "Lic. en Kinesiología y Fisiatría (CIC Gianotti)",
+            "requisitos": "Ropa cómoda. No se precisa colchoneta.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 0,
+            "imagen_url": "https://images.unsplash.com/photo-1518611012118-696072aa579a?auto=format&fit=crop&w=800&q=80"
+        },
+        {
+            "id_taller": "taller-fiuner-04",
+            "titulo": "Cocina Práctica, Nutrición y Ahorro para Estudiantes",
+            "categoria": "Salud Comunitaria y Nutrición",
+            "icono": "🥗",
+            "descripcion": "Recetas económicas de alto valor nutritivo, planificación semanal (Meal Prep) y prevención de la anemia.",
+            "detalle_ampliado": (
+                "Espacio dinámico orientado a estudiantes que viven solos o comparten alquiler en Oro Verde. "
+                "Estrategias para comprar en ferias locales, cocinar en tandas para la semana, garantizar el consumo de hierro, proteínas y legumbres "
+                "con bajo presupuesto, y evitar el salteo habitual del desayuno o almuerzo por horarios de cursada."
+            ),
+            "responde_a": [
+                "Mala nutrición o salteo recurrente de comidas",
+                "Inestabilidad económica severa / dificultad de sustento"
+            ],
+            "publico_objetivo": "Estudiantes y Jóvenes de Oro Verde",
+            "lugar": "CiC 'Gianotti' - Cocina Comunitaria",
+            "horario": "Sábados · 11:00 h",
+            "frecuencia": "Quincenal",
+            "coordinacion": "Lic. en Nutrición (CIC Gianotti)",
+            "requisitos": "Gratuito. Se degustan las recetas preparadas.",
+            "estado": "Activo",
+            "es_ficticio": 1,
+            "destacado_carrusel": 1,
+            "imagen_url": "https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&w=800&q=80"
+        },
+        # TALLERES COMUNITARIOS CLÁSICOS DEL CIC LUIS GIANOTTI
+        {
+            "id_taller": "taller-cic-01",
+            "titulo": "Embarazo Joven y Maternidad Acompañada",
+            "categoria": "Materno-infantil",
+            "icono": "🤰",
+            "descripcion": "Controles obstétricos, derechos del paciente y red comunitaria de apoyo para jóvenes gestantes.",
+            "detalle_ampliado": (
+                "Espacio integral de preparación para la maternidad y paternidad, controles del embarazo en el CAPS, "
+                "pautas de nutrición, derechos en el parto respetado y articulación con asignaciones sociales."
+            ),
+            "responde_a": [
+                "Embarazo o maternidad/paternidad en edad temprana",
+                "Vivienda precaria / hacinamiento en el hogar"
+            ],
+            "publico_objetivo": "Comunidad de Oro Verde",
+            "lugar": "CiC 'Gianotti'",
+            "horario": "Miércoles · 15:00 h",
+            "frecuencia": "Semanal",
+            "coordinacion": "Lic. Obstétrica y Lic. en Trabajo Social",
+            "requisitos": "Abierto y 100% gratuito. Podés concurrir acompañada.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 0,
+            "imagen_url": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=800&q=80"
+        },
+        {
+            "id_taller": "taller-cic-02",
+            "titulo": "Vacunas y Controles de Niño Sano",
+            "categoria": "Prevención y cuidados",
+            "icono": "👶",
+            "descripcion": "Revisión del carnet de vacunación, seguimiento del percentilo de crecimiento y salud infantil.",
+            "detalle_ampliado": (
+                "Control periódico de salud infantil, peso, talla, desarrollo psicomotor y aplicación de vacunas obligatorias "
+                "del Calendario Nacional sin turno y por orden de llegada."
+            ),
+            "responde_a": [
+                "Esquema de vacunación incompleto o desactualizado",
+                "Persona a cargo de cuidados familiares intensivos"
+            ],
+            "publico_objetivo": "Familias con niños pequeños",
+            "lugar": "CiC 'Gianotti' - Vacunatorio",
+            "horario": "Martes · 9:00 h",
+            "frecuencia": "Semanal",
+            "coordinacion": "Equipo de Enfermería y Pediatra",
+            "requisitos": "Traer DNI y libreta sanitaria o carnet de vacunas.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 0,
+            "imagen_url": "https://images.unsplash.com/photo-1628771065518-0d82f1938462?auto=format&fit=crop&w=800&q=80"
+        },
+        {
+            "id_taller": "taller-cic-03",
+            "titulo": "Espacio de Escucha y Deshabituación de Consumos",
+            "categoria": "Salud mental y bienestar",
+            "icono": "🚭",
+            "descripcion": "Encuentros confidenciales y no punitivos sobre alcohol, sustancias y cesación tabáquica.",
+            "detalle_ampliado": (
+                "Dispositivo grupal de umbral bajo, con abordaje de reducción de daños para consumos problemáticos "
+                "y acompañamiento médico para dejar el cigarrillo."
+            ),
+            "responde_a": [
+                "Consumo problemático de sustancias (alcohol, tabaco o psicofármacos)",
+                "Episodios frecuentes de ansiedad o angustia"
+            ],
+            "publico_objetivo": "Jóvenes y Adultos de Oro Verde",
+            "lugar": "CiC 'Gianotti' - Sala Interdisciplinaria",
+            "horario": "Lunes · 18:30 h",
+            "frecuencia": "Semanal",
+            "coordinacion": "Lic. en Psicología y Operadores Sociocomunitarios",
+            "requisitos": "Confidencial y libre. No se juzga ni se exigen antecedentes.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 0,
+            "imagen_url": "https://images.unsplash.com/photo-1527137342181-19aab11a8ee8?auto=format&fit=crop&w=800&q=80"
+        },
+        {
+            "id_taller": "taller-cic-04",
+            "titulo": "Envejecimiento Activo, Prevención de Caídas y Memoria",
+            "categoria": "Tercera edad y autonomía",
+            "icono": "🧓",
+            "descripcion": "Ejercicios de equilibrio, estimulación neurocognitiva y controles de presión arterial en adultos mayores.",
+            "detalle_ampliado": (
+                "Taller de promoción para personas mayores de Oro Verde. Incluye estimulación de memoria, juegos de agilidad mental, "
+                "movilidad articular para prevenir fracturas y contención comunitaria contra la soledad no deseada."
+            ),
+            "responde_a": [
+                "Enfermedad crónica sin control regular",
+                "Aislamiento social / desarraigo familiar",
+                "Persona a cargo de cuidados familiares intensivos"
+            ],
+            "publico_objetivo": "Adultos Mayores y Cuidadores",
+            "lugar": "CiC 'Gianotti' - Salón Comunitario",
+            "horario": "Viernes · 10:00 h",
+            "frecuencia": "Semanal",
+            "coordinacion": "Kinesióloga, Médica Generalista y Talleristas",
+            "requisitos": "Gratuito. Abierto a jubilados y pensionados.",
+            "estado": "Activo",
+            "es_ficticio": 0,
+            "destacado_carrusel": 0,
+            "imagen_url": "https://images.unsplash.com/photo-1576765608535-5f04d1e3f289?auto=format&fit=crop&w=800&q=80"
+        }
+    ]
+
+    for t in talleres_base:
+        registrar_nuevo_taller(**t)
+
+
+def poblar_datos_relevar_demo():
+    """
+    Puebla relevamientos de demostración para la prueba piloto FIUNER
+    y la comunidad de Oro Verde, reflejando la realidad epidemiológica descripta en el PDF.
+    """
+    casos_demo = [
+        # CASOS ESTUDIANTILES FIUNER (Prueba Piloto: Carga cognitiva, estrés normalizado, desarraigo)
+        {
+            "tipo_poblacion": "Estudiante FIUNER (Prueba Piloto)",
+            "rango_etario": "18 - 24 años",
+            "genero": "Femenino",
+            "barrio_o_residencia": "Estudiante",
+            "carrera": "Bioingeniería",
+            "ano_cursado": "3er año",
+            "situacion_habitacional": "Alquila con compañeros de estudio",
+            "factores_vulnerabilidad": [
+                "Estrés académico o laboral severo / agotamiento cognitivo",
+                "Episodios frecuentes de ansiedad o angustia",
+                "Trastornos del sueño o insomnio crónico",
+                "Dolores osteomusculares o cefaleas frecuentes"
+            ],
+            "factores_protectores": [
+                "Cuenta con red sólida de amigos o compañeros",
+                "Tiene cobertura médica o sabe cómo atenderse en el CIC",
+                "Siente que puede pedir ayuda ante un malestar"
+            ],
+            "puntaje_vulnerabilidad": 58.2,
+            "puntaje_proteccion": 45.0,
+            "indice_riesgo_ponderado": 35.7,
+            "nivel_prioridad": "Moderado",
+            "observaciones_libres": "Cursando materias de alta carga matemática. Época de parciales con dolores de cabeza continuos y noches de 4 horas de sueño."
+        },
+        {
+            "tipo_poblacion": "Estudiante FIUNER (Prueba Piloto)",
+            "rango_etario": "18 - 24 años",
+            "genero": "Masculino",
+            "barrio_o_residencia": "Estudiante",
+            "carrera": "Bioingeniería",
+            "ano_cursado": "2do año",
+            "situacion_habitacional": "Alquila solo (oriundo del interior de Entre Ríos)",
+            "factores_vulnerabilidad": [
+                "Estrés académico o laboral severo / agotamiento cognitivo",
+                "Trastornos del sueño o insomnio crónico",
+                "Aislamiento social / desarraigo familiar",
+                "Mala nutrición o salteo recurrente de comidas",
+                "Inestabilidad económica severa / dificultad de sustento"
+            ],
+            "factores_protectores": [
+                "Realiza actividad física o deporte regular (2+ veces/semana)",
+                "Dispone de un entorno tranquilo para estudiar"
+            ],
+            "puntaje_vulnerabilidad": 72.5,
+            "puntaje_proteccion": 24.0,
+            "indice_riesgo_ponderado": 60.5,
+            "nivel_prioridad": "Alto",
+            "observaciones_libres": "Vivir solo lejos de la familia complica la organización de las comidas. El desarraigo se siente mucho los fines de semana."
+        },
+        {
+            "tipo_poblacion": "Estudiante FIUNER (Prueba Piloto)",
+            "rango_etario": "25 - 30 años",
+            "genero": "Masculino",
+            "barrio_o_residencia": "Otro/Foráneo",
+            "carrera": "Lic. en Bioinformática",
+            "ano_cursado": "4to año",
+            "situacion_habitacional": "Vive con familia de origen",
+            "factores_vulnerabilidad": [
+                "Estrés académico o laboral severo / agotamiento cognitivo",
+                "Dolores osteomusculares o cefaleas frecuentes"
+            ],
+            "factores_protectores": [
+                "Cuenta con red sólida de amigos o compañeros",
+                "Realiza actividad física o deporte regular (2+ veces/semana)",
+                "Tiene cobertura médica o sabe cómo atenderse en el CIC",
+                "Mantiene rutinas ordenadas de descanso y alimentación",
+                "Dedica tiempo semanal a hobbies y esparcimiento"
+            ],
+            "puntaje_vulnerabilidad": 24.5,
+            "puntaje_proteccion": 68.0,
+            "indice_riesgo_ponderado": 0.0,
+            "nivel_prioridad": "Bajo",
+            "observaciones_libres": "Buena contención en casa, aunque viajar en colectivo todos los días suma cansancio."
+        },
+        {
+            "tipo_poblacion": "Estudiante FIUNER (Prueba Piloto)",
+            "rango_etario": "18 - 24 años",
+            "genero": "Femenino",
+            "barrio_o_residencia": "Estudiante",
+            "carrera": "Bioingeniería",
+            "ano_cursado": "1er año",
+            "situacion_habitacional": "Alquila en residencia compartida",
+            "factores_vulnerabilidad": [
+                "Estrés académico o laboral severo / agotamiento cognitivo",
+                "Episodios frecuentes de ansiedad o angustia",
+                "Trastornos del sueño o insomnio crónico",
+                "Aislamiento social / desarraigo familiar",
+                "Problema de salud mental diagnosticado sin apoyo"
+            ],
+            "factores_protectores": [
+                "Dispone de un entorno tranquilo para estudiar"
+            ],
+            "puntaje_vulnerabilidad": 82.0,
+            "puntaje_proteccion": 12.0,
+            "indice_riesgo_ponderado": 76.0,
+            "nivel_prioridad": "Crítico",
+            "observaciones_libres": "Crisis de pánico antes de rendir y dificultades para adaptarme a la ciudad."
+        },
+        # CASOS COMUNIDAD DE ORO VERDE (Extensión y APS)
+        {
+            "tipo_poblacion": "Comunidad General (Oro Verde / CIC)",
+            "rango_etario": "31 - 45 años",
+            "genero": "Femenino",
+            "barrio_o_residencia": "Residente de Oro Verde",
+            "carrera": None,
+            "ano_cursado": None,
+            "situacion_habitacional": "Vivienda propia familiar",
+            "factores_vulnerabilidad": [
+                "Inestabilidad económica severa / dificultad de sustento",
+                "Persona a cargo de cuidados familiares intensivos",
+                "Enfermedad crónica sin control regular"
+            ],
+            "factores_protectores": [
+                "Cuenta con red sólida de amigos o compañeros",
+                "Tiene cobertura médica o sabe cómo atenderse en el CIC",
+                "Participa en actividades o talleres comunitarios"
+            ],
+            "puntaje_vulnerabilidad": 46.0,
+            "puntaje_proteccion": 45.0,
+            "indice_riesgo_ponderado": 23.5,
+            "nivel_prioridad": "Bajo",
+            "observaciones_libres": "Madre de 3 chicos, concurre regularmente a la enfermería del CIC."
+        },
+        {
+            "tipo_poblacion": "Comunidad General (Oro Verde / CIC)",
+            "rango_etario": "60+ años",
+            "genero": "Femenino",
+            "barrio_o_residencia": "Residente de Oro Verde",
+            "carrera": None,
+            "ano_cursado": None,
+            "situacion_habitacional": "Vive sola",
+            "factores_vulnerabilidad": [
+                "Enfermedad crónica sin control regular",
+                "Aislamiento social / desarraigo familiar"
+            ],
+            "factores_protectores": [
+                "Tiene cobertura médica o sabe cómo atenderse en el CIC",
+                "Dedica tiempo semanal a hobbies y esparcimiento"
+            ],
+            "puntaje_vulnerabilidad": 32.0,
+            "puntaje_proteccion": 30.0,
+            "indice_riesgo_ponderado": 17.0,
+            "nivel_prioridad": "Bajo",
+            "observaciones_libres": "Control de presión arterial en el Gianotti."
+        }
+    ]
+
+    for c in casos_demo:
+        registrar_relevamiento_relevar(**c)
+
 
